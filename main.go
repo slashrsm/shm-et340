@@ -1,8 +1,9 @@
-// main.go - SHM to Venus OS DBus adapter with Shelly meter Modbus reading
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
@@ -35,24 +36,16 @@ type App struct {
 	shutdownCh chan struct{}
 }
 
-type singlePhase struct {
-	voltage float32 // Volts: 230,0
-	a       float32 // Amps: 8,3
-	power   float32 // Watts: 1909
-	forward float64 // kWh, purchased power
-	reverse float64 // kWh, sold power
-}
-
 // meterData holds data read from a Shelly meter
 type meterData struct {
 	totalPower         float32
-	totalForward       float64
-	totalReverse       float64
+	totalForward       float32
+	totalReverse       float32
 	phaseVoltages      []float32
 	phaseCurrents      []float32
 	phasePowers        []float32
-	phaseForwardEnergy []float64
-	phaseReverseEnergy []float64
+	phaseForwardEnergy []float32
+	phaseReverseEnergy []float32
 }
 
 // readMeterData reads data from a Shelly meter via Modbus
@@ -77,7 +70,16 @@ func readMeterData(ip string) (*meterData, error) {
 	if err != nil {
 		log.Warnf("Failed to read power from %s: %v", ip, err)
 	} else {
-		data.totalPower = float32(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1.0
+		data.totalPower = math.Float32frombits(
+			binary.BigEndian.Uint32(
+				[]byte{
+					results[2], // C
+					results[3], // D
+					results[0], // A
+					results[1], // B
+				},
+			),
+		)
 	}
 
 	// Total forward energy (31162)
@@ -85,7 +87,16 @@ func readMeterData(ip string) (*meterData, error) {
 	if err != nil {
 		log.Warnf("Failed to read forward energy from %s: %v", ip, err)
 	} else {
-		data.totalForward = float64(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1000.0
+		data.totalForward = math.Float32frombits(
+			binary.BigEndian.Uint32(
+				[]byte{
+					results[2], // C
+					results[3], // D
+					results[0], // A
+					results[1], // B
+				},
+			),
+		)
 	}
 
 	// Total reverse energy (31164)
@@ -93,15 +104,24 @@ func readMeterData(ip string) (*meterData, error) {
 	if err != nil {
 		log.Warnf("Failed to read reverse energy from %s: %v", ip, err)
 	} else {
-		data.totalReverse = float64(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1000.0
+		data.totalReverse = math.Float32frombits(
+			binary.BigEndian.Uint32(
+				[]byte{
+					results[2], // C
+					results[3], // D
+					results[0], // A
+					results[1], // B
+				},
+			),
+		)
 	}
 
 	// Initialize phase arrays
 	data.phaseVoltages = make([]float32, 3)
 	data.phaseCurrents = make([]float32, 3)
 	data.phasePowers = make([]float32, 3)
-	data.phaseForwardEnergy = make([]float64, 3)
-	data.phaseReverseEnergy = make([]float64, 3)
+	data.phaseForwardEnergy = make([]float32, 3)
+	data.phaseReverseEnergy = make([]float32, 3)
 
 	// Read data for each phase
 	for phase := 0; phase < 3; phase++ {
@@ -109,33 +129,78 @@ func readMeterData(ip string) (*meterData, error) {
 		dataOffset := phase * 20
 
 		// Phase voltage
-		results, err = client.ReadInputRegisters(uint16(1020+emOffset), 1)
+		results, err = client.ReadInputRegisters(uint16(1020+emOffset), 2)
 		if err == nil {
-			data.phaseVoltages[phase] = float32(results[0]) / 1.0
+			data.phaseVoltages[phase] = math.Float32frombits(
+				binary.BigEndian.Uint32(
+					[]byte{
+						results[2], // C
+						results[3], // D
+						results[0], // A
+						results[1], // B
+					},
+				),
+			)
 		}
 
 		// Phase current
-		results, err = client.ReadInputRegisters(uint16(1022+emOffset), 1)
+		results, err = client.ReadInputRegisters(uint16(1022+emOffset), 2)
 		if err == nil {
-			data.phaseCurrents[phase] = float32(results[0]) / 100.0 // Shelly returns current in 0.01A units
+			data.phaseCurrents[phase] = math.Float32frombits(
+				binary.BigEndian.Uint32(
+					[]byte{
+						results[2], // C
+						results[3], // D
+						results[0], // A
+						results[1], // B
+					},
+				),
+			)
 		}
 
 		// Phase power
 		results, err = client.ReadInputRegisters(uint16(1024+emOffset), 2)
 		if err == nil {
-			data.phasePowers[phase] = float32(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1.0
+			data.phasePowers[phase] = math.Float32frombits(
+				binary.BigEndian.Uint32(
+					[]byte{
+						results[2], // C
+						results[3], // D
+						results[0], // A
+						results[1], // B
+					},
+				),
+			)
 		}
 
 		// Phase forward energy
 		results, err = client.ReadInputRegisters(uint16(1182+dataOffset), 2)
 		if err == nil {
-			data.phaseForwardEnergy[phase] = float64(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1000.0
+			data.phaseForwardEnergy[phase] = math.Float32frombits(
+				binary.BigEndian.Uint32(
+					[]byte{
+						results[2], // C
+						results[3], // D
+						results[0], // A
+						results[1], // B
+					},
+				),
+			)
 		}
 
 		// Phase reverse energy
 		results, err = client.ReadInputRegisters(uint16(1184+dataOffset), 2)
 		if err == nil {
-			data.phaseReverseEnergy[phase] = float64(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1000.0
+			data.phaseReverseEnergy[phase] = math.Float32frombits(
+				binary.BigEndian.Uint32(
+					[]byte{
+						results[2], // C
+						results[3], // D
+						results[0], // A
+						results[1], // B
+					},
+				),
+			)
 		}
 	}
 
@@ -162,8 +227,8 @@ func calculateNetData(consumption, solar *meterData) (*meterData, error) {
 	net.phaseVoltages = make([]float32, 3)
 	net.phaseCurrents = make([]float32, 3)
 	net.phasePowers = make([]float32, 3)
-	net.phaseForwardEnergy = make([]float64, 3)
-	net.phaseReverseEnergy = make([]float64, 3)
+	net.phaseForwardEnergy = make([]float32, 3)
+	net.phaseReverseEnergy = make([]float32, 3)
 
 	// Calculate net values per phase
 	net.phaseVoltages[0] = consumption.phaseVoltages[0]
@@ -318,74 +383,42 @@ func (a *App) ReadMeterData() {
 		netData, _ = calculateNetData(consumptionData, solarData)
 	}
 
-	// Convert to singlePhase structs for compatibility with existing code
-	L1 := &singlePhase{
-		voltage: netData.phaseVoltages[0],
-		a:       netData.phaseCurrents[0],
-		power:   netData.phasePowers[0],
-		forward: netData.phaseForwardEnergy[0],
-		reverse: netData.phaseReverseEnergy[0],
-	}
-
-	L2 := &singlePhase{
-		voltage: netData.phaseVoltages[1],
-		a:       netData.phaseCurrents[1],
-		power:   netData.phasePowers[1],
-		forward: netData.phaseForwardEnergy[1],
-		reverse: netData.phaseReverseEnergy[1],
-	}
-
-	L3 := &singlePhase{
-		voltage: netData.phaseVoltages[2],
-		a:       netData.phaseCurrents[2],
-		power:   netData.phasePowers[2],
-		forward: netData.phaseForwardEnergy[2],
-		reverse: netData.phaseReverseEnergy[2],
-	}
-
-	// Calculate totals
-	powertot := netData.totalPower
-	bezugtot := netData.totalForward
-	einsptot := netData.totalReverse
-	totalCurrent := L1.a + L2.a + L3.a
-	totalVoltage := (L1.voltage + L2.voltage + L3.voltage) / 3.0
-
 	if log.IsLevelEnabled(log.DebugLevel) {
-		PrintPhaseTable(L1, L2, L3)
+		PrintPhaseTable(netData, consumptionData, solarData)
 	}
 
 	// Update totals
-	update("/Ac/Power", "W", float64(powertot), 1)
-	update("/Ac/Energy/Reverse", "kWh", einsptot, 2)
-	update("/Ac/Energy/Forward", "kWh", bezugtot, 2)
-	update("/Ac/Current", "A", float64(totalCurrent), 2)
-	update("/Ac/Voltage", "V", float64(totalVoltage), 2)
+	update("/Ac/Power", "W", float64(netData.totalPower), 1)
+	update("/Ac/Energy/Reverse", "kWh", float64(netData.totalReverse), 2)
+	update("/Ac/Energy/Forward", "kWh", float64(netData.totalForward), 2)
+	update("/Ac/Current", "A", float64(netData.phaseCurrents[0]+netData.phaseCurrents[1]+netData.phaseCurrents[2]), 2)
+	update("/Ac/Voltage", "V", float64((netData.phaseVoltages[0]+netData.phaseVoltages[1]+netData.phaseVoltages[2])/3.0), 2)
 
 	// Update L1 values
-	update("/Ac/L1/Power", "W", float64(L1.power), 1)
-	update("/Ac/L1/Voltage", "V", float64(L1.voltage), 2)
-	update("/Ac/L1/Current", "A", float64(L1.a), 2)
-	update("/Ac/L1/Energy/Forward", "kWh", L1.forward, 2)
-	update("/Ac/L1/Energy/Reverse", "kWh", L1.reverse, 2)
+	update("/Ac/L1/Power", "W", float64(netData.phasePowers[0]), 1)
+	update("/Ac/L1/Voltage", "V", float64(netData.phaseVoltages[0]), 2)
+	update("/Ac/L1/Current", "A", float64(netData.phaseCurrents[0]), 2)
+	update("/Ac/L1/Energy/Forward", "kWh", float64(netData.phaseForwardEnergy[0]), 2)
+	update("/Ac/L1/Energy/Reverse", "kWh", float64(netData.phaseReverseEnergy[0]), 2)
 
 	// Update L2 values
-	update("/Ac/L2/Power", "W", float64(L2.power), 1)
-	update("/Ac/L2/Voltage", "V", float64(L2.voltage), 2)
-	update("/Ac/L2/Current", "A", float64(L2.a), 2)
-	update("/Ac/L2/Energy/Forward", "kWh", L2.forward, 2)
-	update("/Ac/L2/Energy/Reverse", "kWh", L2.reverse, 2)
+	update("/Ac/L2/Power", "W", float64(netData.phasePowers[1]), 1)
+	update("/Ac/L2/Voltage", "V", float64(netData.phaseVoltages[1]), 2)
+	update("/Ac/L2/Current", "A", float64(netData.phaseCurrents[1]), 2)
+	update("/Ac/L2/Energy/Forward", "kWh", float64(netData.phaseForwardEnergy[1]), 2)
+	update("/Ac/L2/Energy/Reverse", "kWh", float64(netData.phaseReverseEnergy[1]), 2)
 
 	// Update L3 values
-	update("/Ac/L3/Power", "W", float64(L3.power), 1)
-	update("/Ac/L3/Voltage", "V", float64(L3.voltage), 2)
-	update("/Ac/L3/Current", "A", float64(L3.a), 2)
-	update("/Ac/L3/Energy/Forward", "kWh", L3.forward, 2)
-	update("/Ac/L3/Energy/Reverse", "kWh", L3.reverse, 2)
+	update("/Ac/L3/Power", "W", float64(netData.phasePowers[2]), 1)
+	update("/Ac/L3/Voltage", "V", float64(netData.phaseVoltages[2]), 2)
+	update("/Ac/L3/Current", "A", float64(netData.phaseCurrents[2]), 2)
+	update("/Ac/L3/Energy/Forward", "kWh", float64(netData.phaseForwardEnergy[2]), 2)
+	update("/Ac/L3/Energy/Reverse", "kWh", float64(netData.phaseReverseEnergy[2]), 2)
 
 	// finally, post the updates
 	a.emitItemsChanged(changedItems)
 
-	log.Info(fmt.Sprintf("Meter data published to D-Bus: %.1f W (consumption: %s, solar: %s)", powertot, a.config.ConsumptionIP, a.config.SolarIP))
+	log.Info(fmt.Sprintf("Meter data published to D-Bus: %.1f W", netData.totalPower))
 }
 
 // NewApp creates a new application instance
@@ -449,15 +482,40 @@ func (a *App) Shutdown() {
 	}
 }
 
-func PrintPhaseTable(L1, L2, L3 *singlePhase) {
+func PrintPhaseTable(net, consumption, solar *meterData) {
 	log.Println("+-----+-------------+---------------+---------------+")
 	log.Println("|value|   L1 \t|     L2  \t|   L3  \t|")
 	log.Println("+-----+-------------+---------------+---------------+")
-	log.Printf("|  V  | %8.2f \t| %8.2f \t| %8.2f \t|", L1.voltage, L2.voltage, L3.voltage)
-	log.Printf("|  A  | %8.2f \t| %8.2f \t| %8.2f \t|", L1.a, L2.a, L3.a)
-	log.Printf("|  W  | %8.2f \t| %8.2f \t| %8.2f \t|", L1.power, L2.power, L3.power)
-	log.Printf("| kWh | %8.2f \t| %8.2f \t| %8.2f \t|", L1.forward, L2.forward, L3.forward)
-	log.Printf("| kWh | %8.2f \t| %8.2f \t| %8.2f \t|", L1.reverse, L2.reverse, L3.reverse)
+	log.Printf(
+		"|  V  | %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f  (S: %8.2f, C: %8.2f) \t|",
+		net.phaseVoltages[0], solar.phaseVoltages[0], consumption.phaseVoltages[0],
+		net.phaseVoltages[1], solar.phaseVoltages[1], consumption.phaseVoltages[1],
+		net.phaseVoltages[2], solar.phaseVoltages[2], consumption.phaseVoltages[2],
+	)
+	log.Printf(
+		"|  A  | %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t|",
+		net.phaseCurrents[0], solar.phaseCurrents[0], consumption.phaseCurrents[0],
+		net.phaseCurrents[1], solar.phaseCurrents[1], consumption.phaseCurrents[1],
+		net.phaseCurrents[2], solar.phaseCurrents[2], consumption.phaseCurrents[2],
+	)
+	log.Printf(
+		"|  W  | %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t|",
+		net.phasePowers[0], solar.phasePowers[0], consumption.phasePowers[0],
+		net.phasePowers[1], solar.phasePowers[1], consumption.phasePowers[1],
+		net.phasePowers[2], solar.phasePowers[2], consumption.phasePowers[2],
+	)
+	log.Printf(
+		"| kWh | %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t|",
+		net.phaseForwardEnergy[0], solar.phaseForwardEnergy[0], consumption.phaseForwardEnergy[0],
+		net.phaseForwardEnergy[1], solar.phaseForwardEnergy[1], consumption.phaseForwardEnergy[1],
+		net.phaseForwardEnergy[2], solar.phaseForwardEnergy[2], consumption.phaseForwardEnergy[2],
+	)
+	log.Printf(
+		"| kWh | %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t|",
+		net.phaseReverseEnergy[0], solar.phaseReverseEnergy[0], consumption.phaseReverseEnergy[0],
+		net.phaseReverseEnergy[1], solar.phaseReverseEnergy[1], consumption.phaseReverseEnergy[1],
+		net.phaseReverseEnergy[2], solar.phaseReverseEnergy[2], consumption.phaseReverseEnergy[2],
+	)
 	log.Println("+-----+-------------+---------------+---------------+")
 }
 
