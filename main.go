@@ -73,7 +73,7 @@ func readMeterData(ip string) (*meterData, error) {
 
 	// Read input registers (Shelly uses input registers)
 	// Total power (31013)
-	results, err := client.ReadInputRegisters(31013, 2)
+	results, err := client.ReadInputRegisters(1013, 2)
 	if err != nil {
 		log.Warnf("Failed to read power from %s: %v", ip, err)
 	} else {
@@ -81,7 +81,7 @@ func readMeterData(ip string) (*meterData, error) {
 	}
 
 	// Total forward energy (31162)
-	results, err = client.ReadInputRegisters(31162, 2)
+	results, err = client.ReadInputRegisters(1162, 2)
 	if err != nil {
 		log.Warnf("Failed to read forward energy from %s: %v", ip, err)
 	} else {
@@ -89,7 +89,7 @@ func readMeterData(ip string) (*meterData, error) {
 	}
 
 	// Total reverse energy (31164)
-	results, err = client.ReadInputRegisters(31164, 2)
+	results, err = client.ReadInputRegisters(1164, 2)
 	if err != nil {
 		log.Warnf("Failed to read reverse energy from %s: %v", ip, err)
 	} else {
@@ -109,31 +109,31 @@ func readMeterData(ip string) (*meterData, error) {
 		dataOffset := phase * 20
 
 		// Phase voltage
-		results, err = client.ReadInputRegisters(uint16(31020+emOffset), 1)
+		results, err = client.ReadInputRegisters(uint16(1020+emOffset), 1)
 		if err == nil {
 			data.phaseVoltages[phase] = float32(results[0]) / 1.0
 		}
 
 		// Phase current
-		results, err = client.ReadInputRegisters(uint16(31022+emOffset), 1)
+		results, err = client.ReadInputRegisters(uint16(1022+emOffset), 1)
 		if err == nil {
 			data.phaseCurrents[phase] = float32(results[0]) / 100.0 // Shelly returns current in 0.01A units
 		}
 
 		// Phase power
-		results, err = client.ReadInputRegisters(uint16(31024+emOffset), 2)
+		results, err = client.ReadInputRegisters(uint16(1024+emOffset), 2)
 		if err == nil {
 			data.phasePowers[phase] = float32(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1.0
 		}
 
 		// Phase forward energy
-		results, err = client.ReadInputRegisters(uint16(31182+dataOffset), 2)
+		results, err = client.ReadInputRegisters(uint16(1182+dataOffset), 2)
 		if err == nil {
 			data.phaseForwardEnergy[phase] = float64(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1000.0
 		}
 
 		// Phase reverse energy
-		results, err = client.ReadInputRegisters(uint16(31184+dataOffset), 2)
+		results, err = client.ReadInputRegisters(uint16(1184+dataOffset), 2)
 		if err == nil {
 			data.phaseReverseEnergy[phase] = float64(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1000.0
 		}
