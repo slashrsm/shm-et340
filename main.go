@@ -697,10 +697,11 @@ func main() {
 	pollingStr := os.Getenv("POLLING_INTERVAL_SECONDS")
 	pollingInterval := 1 * time.Second
 	if pollingStr != "" {
-		if seconds, err := strconv.Atoi(pollingStr); err == nil {
-			pollingInterval = time.Duration(seconds) * time.Second
+		if seconds, err := strconv.ParseFloat(pollingStr, 32); err == nil {
+			pollingInterval = time.Duration(int(seconds*1000)) * time.Millisecond
 		}
 	}
+	log.Debugf("Polling interval: %d", pollingInterval.Milliseconds())
 
 	// Create configuration
 	config := Config{
