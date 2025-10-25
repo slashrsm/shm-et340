@@ -1,16 +1,17 @@
-// main.go - SHM to Venus OS DBus adapter with random data generation
+// main.go - SHM to Venus OS DBus adapter with Shelly meter Modbus reading
 package main
 
 import (
 	"fmt"
-	"math/rand"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/goburrow/modbus"
 	"github.com/godbus/dbus/introspect"
 	"github.com/godbus/dbus/v5"
 	log "github.com/sirupsen/logrus"
@@ -18,8 +19,11 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	DBusName string
-	LogLevel string
+	DBusName        string
+	LogLevel        string
+	ConsumptionIP   string
+	SolarIP         string
+	PollingInterval time.Duration
 }
 
 // App represents the main application
@@ -37,6 +41,150 @@ type singlePhase struct {
 	power   float32 // Watts: 1909
 	forward float64 // kWh, purchased power
 	reverse float64 // kWh, sold power
+}
+
+// meterData holds data read from a Shelly meter
+type meterData struct {
+	totalPower         float32
+	totalForward       float64
+	totalReverse       float64
+	phaseVoltages      []float32
+	phaseCurrents      []float32
+	phasePowers        []float32
+	phaseForwardEnergy []float64
+	phaseReverseEnergy []float64
+}
+
+// readMeterData reads data from a Shelly meter via Modbus
+func readMeterData(ip string) (*meterData, error) {
+	// Connect to Modbus TCP
+	handler := modbus.NewTCPClientHandler(fmt.Sprintf("%s:502", ip))
+	handler.Timeout = 1 * time.Second
+	handler.SlaveId = 1
+
+	err := handler.Connect()
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to %s: %v", ip, err)
+	}
+	defer handler.Close()
+
+	client := modbus.NewClient(handler)
+	data := &meterData{}
+
+	// Read input registers (Shelly uses input registers)
+	// Total power (31013)
+	results, err := client.ReadInputRegisters(31013, 2)
+	if err != nil {
+		log.Warnf("Failed to read power from %s: %v", ip, err)
+	} else {
+		data.totalPower = float32(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1.0
+	}
+
+	// Total forward energy (31162)
+	results, err = client.ReadInputRegisters(31162, 2)
+	if err != nil {
+		log.Warnf("Failed to read forward energy from %s: %v", ip, err)
+	} else {
+		data.totalForward = float64(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1000.0
+	}
+
+	// Total reverse energy (31164)
+	results, err = client.ReadInputRegisters(31164, 2)
+	if err != nil {
+		log.Warnf("Failed to read reverse energy from %s: %v", ip, err)
+	} else {
+		data.totalReverse = float64(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1000.0
+	}
+
+	// Initialize phase arrays
+	data.phaseVoltages = make([]float32, 3)
+	data.phaseCurrents = make([]float32, 3)
+	data.phasePowers = make([]float32, 3)
+	data.phaseForwardEnergy = make([]float64, 3)
+	data.phaseReverseEnergy = make([]float64, 3)
+
+	// Read data for each phase
+	for phase := 0; phase < 3; phase++ {
+		emOffset := phase * 20
+		dataOffset := phase * 20
+
+		// Phase voltage
+		results, err = client.ReadInputRegisters(uint16(31020+emOffset), 1)
+		if err == nil {
+			data.phaseVoltages[phase] = float32(results[0]) / 1.0
+		}
+
+		// Phase current
+		results, err = client.ReadInputRegisters(uint16(31022+emOffset), 1)
+		if err == nil {
+			data.phaseCurrents[phase] = float32(results[0]) / 100.0 // Shelly returns current in 0.01A units
+		}
+
+		// Phase power
+		results, err = client.ReadInputRegisters(uint16(31024+emOffset), 2)
+		if err == nil {
+			data.phasePowers[phase] = float32(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1.0
+		}
+
+		// Phase forward energy
+		results, err = client.ReadInputRegisters(uint16(31182+dataOffset), 2)
+		if err == nil {
+			data.phaseForwardEnergy[phase] = float64(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1000.0
+		}
+
+		// Phase reverse energy
+		results, err = client.ReadInputRegisters(uint16(31184+dataOffset), 2)
+		if err == nil {
+			data.phaseReverseEnergy[phase] = float64(int32((uint32(results[0])<<16)|uint32(results[1]))) / 1000.0
+		}
+	}
+
+	return data, nil
+}
+
+// calculateNetData calculates net grid values from consumption and solar meter data
+func calculateNetData(consumption, solar *meterData) (*meterData, error) {
+	if consumption == nil || solar == nil {
+		return nil, fmt.Errorf("meter data is nil")
+	}
+
+	net := &meterData{}
+
+	// Net power: consumption - solar (positive = importing, negative = exporting)
+	net.totalPower = consumption.totalPower - solar.totalPower
+
+	// For energy, we keep consumption and solar separate since they're accumulated meters
+	// The forward/reverse logic might need adjustment based on the actual meter configuration
+	net.totalForward = consumption.totalForward
+	net.totalReverse = solar.totalForward // Solar generation is "delivered" energy
+
+	// Initialize phase arrays
+	net.phaseVoltages = make([]float32, 3)
+	net.phaseCurrents = make([]float32, 3)
+	net.phasePowers = make([]float32, 3)
+	net.phaseForwardEnergy = make([]float64, 3)
+	net.phaseReverseEnergy = make([]float64, 3)
+
+	// Calculate net values per phase
+	net.phaseVoltages[0] = consumption.phaseVoltages[0]
+	net.phasePowers[0] = consumption.phasePowers[0] - solar.phasePowers[1]
+	net.phaseCurrents[0] = consumption.phaseCurrents[0] - solar.phaseCurrents[1]
+	net.phaseForwardEnergy[0] = consumption.phaseForwardEnergy[0] + solar.phaseReverseEnergy[1]
+	net.phaseReverseEnergy[0] = consumption.phaseReverseEnergy[0] + solar.phaseForwardEnergy[1]
+
+	net.phaseVoltages[1] = consumption.phaseVoltages[1]
+	net.phasePowers[1] = consumption.phasePowers[1] - solar.phasePowers[0]
+	net.phaseCurrents[1] = consumption.phaseCurrents[1] - solar.phaseCurrents[0]
+	net.phaseForwardEnergy[1] = consumption.phaseForwardEnergy[1] + solar.phaseReverseEnergy[0]
+	net.phaseReverseEnergy[1] = consumption.phaseReverseEnergy[1] + solar.phaseForwardEnergy[0]
+
+	net.phaseVoltages[2] = consumption.phaseVoltages[2]
+	net.phasePowers[2] = consumption.phasePowers[2] - solar.phasePowers[2]
+	net.phaseCurrents[2] = consumption.phaseCurrents[2] - solar.phaseCurrents[2]
+	net.phaseForwardEnergy[2] = consumption.phaseForwardEnergy[2] + solar.phaseReverseEnergy[2]
+	net.phaseReverseEnergy[2] = consumption.phaseReverseEnergy[2] + solar.phaseForwardEnergy[2]
+
+	return net, nil
 }
 
 const intro = `
@@ -59,25 +207,6 @@ const intro = `
       <arg direction="out" type="a{sa{sv}}" name="values"/>
     </method>
 	</interface>` + introspect.IntrospectDataString + `</node> `
-
-func generateRandomPhase() *singlePhase {
-	L := singlePhase{}
-
-	// Generate random voltage (220-240V range)
-	L.voltage = 220 + rand.Float32()*20
-
-	// Generate random power (-5000 to 5000W to simulate import/export)
-	L.power = (rand.Float32() - 0.5) * 10000
-
-	// Calculate current from power and voltage (I = P/V)
-	L.a = L.power / L.voltage
-
-	// Generate random energy values (accumulated kWh)
-	L.forward = rand.Float64() * 10000 // 0-10000 kWh imported
-	L.reverse = rand.Float64() * 10000 // 0-10000 kWh exported
-
-	return &L
-}
 
 type objectpath string
 
@@ -141,9 +270,9 @@ func init() {
 	log.SetLevel(ll)
 }
 
-func (a *App) GenerateRandomData() {
+func (a *App) ReadMeterData() {
 	log.Debug("----------------------")
-	log.Debug("Generating random meter data")
+	log.Debug("Reading meter data from Shelly devices")
 
 	changedItems := make(map[string]map[string]dbus.Variant)
 
@@ -169,15 +298,55 @@ func (a *App) GenerateRandomData() {
 		}
 	}
 
-	// Generate random values for 3 phases
-	L1 := generateRandomPhase()
-	L2 := generateRandomPhase()
-	L3 := generateRandomPhase()
+	// Read data from both meters
+	consumptionData, consumptionErr := readMeterData(a.config.ConsumptionIP)
+	solarData, solarErr := readMeterData(a.config.SolarIP)
+
+	// If we can only read one meter, use it directly
+	var netData *meterData
+	if consumptionErr != nil && solarErr != nil {
+		log.Warn("Failed to read from both meters - skipping data update")
+		return
+	} else if consumptionErr != nil {
+		log.Warnf("Failed to read consumption meter: %v, using solar data only", consumptionErr)
+		netData = solarData
+	} else if solarErr != nil {
+		log.Warnf("Failed to read solar meter: %v, using consumption data only", solarErr)
+		netData = consumptionData
+	} else {
+		// Both meters read successfully, calculate net values
+		netData, _ = calculateNetData(consumptionData, solarData)
+	}
+
+	// Convert to singlePhase structs for compatibility with existing code
+	L1 := &singlePhase{
+		voltage: netData.phaseVoltages[0],
+		a:       netData.phaseCurrents[0],
+		power:   netData.phasePowers[0],
+		forward: netData.phaseForwardEnergy[0],
+		reverse: netData.phaseReverseEnergy[0],
+	}
+
+	L2 := &singlePhase{
+		voltage: netData.phaseVoltages[1],
+		a:       netData.phaseCurrents[1],
+		power:   netData.phasePowers[1],
+		forward: netData.phaseForwardEnergy[1],
+		reverse: netData.phaseReverseEnergy[1],
+	}
+
+	L3 := &singlePhase{
+		voltage: netData.phaseVoltages[2],
+		a:       netData.phaseCurrents[2],
+		power:   netData.phasePowers[2],
+		forward: netData.phaseForwardEnergy[2],
+		reverse: netData.phaseReverseEnergy[2],
+	}
 
 	// Calculate totals
-	powertot := L1.power + L2.power + L3.power
-	bezugtot := L1.forward + L2.forward + L3.forward
-	einsptot := L1.reverse + L2.reverse + L3.reverse
+	powertot := netData.totalPower
+	bezugtot := netData.totalForward
+	einsptot := netData.totalReverse
 	totalCurrent := L1.a + L2.a + L3.a
 	totalVoltage := (L1.voltage + L2.voltage + L3.voltage) / 3.0
 
@@ -216,7 +385,7 @@ func (a *App) GenerateRandomData() {
 	// finally, post the updates
 	a.emitItemsChanged(changedItems)
 
-	log.Info(fmt.Sprintf("Random data published to D-Bus: %.1f W", powertot))
+	log.Info(fmt.Sprintf("Meter data published to D-Bus: %.1f W (consumption: %s, solar: %s)", powertot, a.config.ConsumptionIP, a.config.SolarIP))
 }
 
 // NewApp creates a new application instance
@@ -250,17 +419,17 @@ func (a *App) Run() error {
 		return fmt.Errorf("failed to register DBus paths: %w", err)
 	}
 
-	log.Info("Successfully connected to dbus and registered as a meter... Starting random data generation")
+	log.Info("Successfully connected to dbus and registered as a meter... Starting meter data reading")
 
-	// Start timer to generate random data every 5 seconds
-	ticker := time.NewTicker(5 * time.Second)
+	// Start timer to read meter data at configured interval
+	ticker := time.NewTicker(a.config.PollingInterval)
 	defer ticker.Stop()
 
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
-				a.GenerateRandomData()
+				a.ReadMeterData()
 			case <-a.shutdownCh:
 				return
 			}
@@ -466,10 +635,33 @@ func main() {
 	}
 	log.SetLevel(ll)
 
+	// Configure meter IPs
+	consumptionIP := os.Getenv("CONSUMPTION_METER_IP")
+	if consumptionIP == "" {
+		consumptionIP = "192.168.11.190"
+	}
+
+	solarIP := os.Getenv("SOLAR_METER_IP")
+	if solarIP == "" {
+		solarIP = "192.168.11.52"
+	}
+
+	// Configure polling interval
+	pollingStr := os.Getenv("POLLING_INTERVAL_SECONDS")
+	pollingInterval := 1 * time.Second
+	if pollingStr != "" {
+		if seconds, err := strconv.Atoi(pollingStr); err == nil {
+			pollingInterval = time.Duration(seconds) * time.Second
+		}
+	}
+
 	// Create configuration
 	config := Config{
-		DBusName: "com.victronenergy.grid.cgwacs_ttyUSB0_di30_mb1",
-		LogLevel: lvl,
+		DBusName:        "com.victronenergy.grid.cgwacs_ttyUSB0_di30_mb1",
+		LogLevel:        lvl,
+		ConsumptionIP:   consumptionIP,
+		SolarIP:         solarIP,
+		PollingInterval: pollingInterval,
 	}
 
 	// Create and run application
