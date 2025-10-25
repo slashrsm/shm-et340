@@ -486,36 +486,25 @@ func PrintPhaseTable(net, consumption, solar *meterData) {
 	log.Println("+-----+-------------+---------------+---------------+")
 	log.Println("|value|   L1 \t|     L2  \t|   L3  \t|")
 	log.Println("+-----+-------------+---------------+---------------+")
-	log.Printf(
-		"|  V  | %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f  (S: %8.2f, C: %8.2f) \t|",
-		net.phaseVoltages[0], solar.phaseVoltages[0], consumption.phaseVoltages[0],
-		net.phaseVoltages[1], solar.phaseVoltages[1], consumption.phaseVoltages[1],
-		net.phaseVoltages[2], solar.phaseVoltages[2], consumption.phaseVoltages[2],
-	)
-	log.Printf(
-		"|  A  | %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t|",
-		net.phaseCurrents[0], solar.phaseCurrents[0], consumption.phaseCurrents[0],
-		net.phaseCurrents[1], solar.phaseCurrents[1], consumption.phaseCurrents[1],
-		net.phaseCurrents[2], solar.phaseCurrents[2], consumption.phaseCurrents[2],
-	)
-	log.Printf(
-		"|  W  | %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t|",
-		net.phasePowers[0], solar.phasePowers[0], consumption.phasePowers[0],
-		net.phasePowers[1], solar.phasePowers[1], consumption.phasePowers[1],
-		net.phasePowers[2], solar.phasePowers[2], consumption.phasePowers[2],
-	)
-	log.Printf(
-		"| kWh | %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t|",
-		net.phaseForwardEnergy[0], solar.phaseForwardEnergy[0], consumption.phaseForwardEnergy[0],
-		net.phaseForwardEnergy[1], solar.phaseForwardEnergy[1], consumption.phaseForwardEnergy[1],
-		net.phaseForwardEnergy[2], solar.phaseForwardEnergy[2], consumption.phaseForwardEnergy[2],
-	)
-	log.Printf(
-		"| kWh | %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t| %8.2f (S: %8.2f, C: %8.2f) \t|",
-		net.phaseReverseEnergy[0], solar.phaseReverseEnergy[0], consumption.phaseReverseEnergy[0],
-		net.phaseReverseEnergy[1], solar.phaseReverseEnergy[1], consumption.phaseReverseEnergy[1],
-		net.phaseReverseEnergy[2], solar.phaseReverseEnergy[2], consumption.phaseReverseEnergy[2],
-	)
+	log.Printf("|  V  | %8.2f \t| %8.2f \t| %8.2f \t|", net.phaseVoltages[0], net.phaseVoltages[1], net.phaseVoltages[2])
+	log.Printf("|  s  | %8.2f \t| %8.2f \t| %8.2f \t|", solar.phaseVoltages[0], solar.phaseVoltages[1], solar.phaseVoltages[2])
+	log.Printf("|  c  | %8.2f \t| %8.2f \t| %8.2f \t|", consumption.phaseVoltages[0], consumption.phaseVoltages[1], consumption.phaseVoltages[2])
+	log.Println("+-----+-------------+---------------+---------------+")
+	log.Printf("|  A  | %8.2f \t| %8.2f \t| %8.2f \t|", net.phaseCurrents[0], net.phaseCurrents[1], net.phaseCurrents[2])
+	log.Printf("|  s  | %8.2f \t| %8.2f \t| %8.2f \t|", solar.phaseCurrents[0], solar.phaseCurrents[1], solar.phaseCurrents[2])
+	log.Printf("|  c  | %8.2f \t| %8.2f \t| %8.2f \t|", consumption.phaseCurrents[0], consumption.phaseCurrents[1], consumption.phaseCurrents[2])
+	log.Println("+-----+-------------+---------------+---------------+")
+	log.Printf("|  W  | %8.2f \t| %8.2f \t| %8.2f \t|", net.phasePowers[0], net.phasePowers[1], net.phasePowers[2])
+	log.Printf("|  s  | %8.2f \t| %8.2f \t| %8.2f \t|", solar.phasePowers[0], solar.phasePowers[1], solar.phasePowers[2])
+	log.Printf("|  c  | %8.2f \t| %8.2f \t| %8.2f \t|", consumption.phasePowers[0], consumption.phasePowers[1], consumption.phasePowers[2])
+	log.Println("+-----+-------------+---------------+---------------+")
+	log.Printf("| kWh | %8.2f \t| %8.2f \t| %8.2f \t|", net.phaseForwardEnergy[0], net.phaseForwardEnergy[1], net.phaseForwardEnergy[2])
+	log.Printf("|  s  | %8.2f \t| %8.2f \t| %8.2f \t|", solar.phaseForwardEnergy[0], solar.phaseForwardEnergy[1], solar.phaseForwardEnergy[2])
+	log.Printf("|  c  | %8.2f \t| %8.2f \t| %8.2f \t|", consumption.phaseForwardEnergy[0], consumption.phaseForwardEnergy[1], consumption.phaseForwardEnergy[2])
+	log.Println("+-----+-------------+---------------+---------------+")
+	log.Printf("| kWh | %8.2f \t| %8.2f \t| %8.2f \t|", net.phaseReverseEnergy[0], net.phaseReverseEnergy[1], net.phaseReverseEnergy[2])
+	log.Printf("|  s  | %8.2f \t| %8.2f \t| %8.2f \t|", solar.phaseReverseEnergy[0], solar.phaseReverseEnergy[1], solar.phaseReverseEnergy[2])
+	log.Printf("|  c  | %8.2f \t| %8.2f \t| %8.2f \t|", consumption.phaseReverseEnergy[0], consumption.phaseReverseEnergy[1], consumption.phaseReverseEnergy[2])
 	log.Println("+-----+-------------+---------------+---------------+")
 }
 
