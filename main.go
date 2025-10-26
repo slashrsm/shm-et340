@@ -29,11 +29,13 @@ type Config struct {
 
 // App represents the main application
 type App struct {
-	config     Config
-	dbusConn   *dbus.Conn
-	values     map[int]map[objectpath]dbus.Variant
-	mu         sync.RWMutex
-	shutdownCh chan struct{}
+	config          Config
+	dbusConn        *dbus.Conn
+	values          map[int]map[objectpath]dbus.Variant
+	mu              sync.RWMutex
+	shutdownCh      chan struct{}
+	consumptionConn *modbus.TCPClientHandler
+	solarConn       *modbus.TCPClientHandler
 }
 
 // meterData holds data read from a Shelly meter
@@ -48,26 +50,77 @@ type meterData struct {
 	phaseReverseEnergy []float32
 }
 
-// readMeterData reads data from a Shelly meter via Modbus
-func readMeterData(ip string) (*meterData, error) {
-	// Connect to Modbus TCP
+func (a *App) ensureConnection(ip string, connection *modbus.TCPClientHandler) (*modbus.TCPClientHandler, error) {
+	if connection != nil {
+		// Test if connection is still alive
+		if _, testErr := modbus.NewClient(connection).ReadInputRegisters(1, 1); testErr == nil {
+			return nil, nil // Connection is still good
+		}
+		// Connection failed, close it and reconnect
+		connection.Close()
+		connection = nil
+	}
+
+	// Establish new connection
 	handler := modbus.NewTCPClientHandler(fmt.Sprintf("%s:502", ip))
-	handler.Timeout = 1 * time.Second
+	handler.Timeout = 2 * time.Second
 	handler.SlaveId = 1
 
-	err := handler.Connect()
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %v", ip, err)
+	if err := handler.Connect(); err != nil {
+		return nil, fmt.Errorf("failed to connect to meter %s: %v", ip, err)
 	}
-	defer handler.Close()
 
-	client := modbus.NewClient(handler)
+	connection = handler
+	if log.IsLevelEnabled(log.DebugLevel) {
+		log.Debugf("Established persistent connection to meter: %s", ip)
+	}
+
+	return handler, nil
+}
+
+func (a *App) readMeterData(ip string, isConsumption bool) (*meterData, error) {
+	// Ensure connections are established and healthy
+	var newConn *modbus.TCPClientHandler
+	var err error
+	if isConsumption {
+		newConn, err = a.ensureConnection(ip, a.consumptionConn)
+	} else {
+		newConn, err = a.ensureConnection(ip, a.solarConn)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	if newConn != nil {
+		if isConsumption {
+			a.consumptionConn = newConn
+		} else {
+			a.solarConn = newConn
+		}
+	}
+
+	// Get the appropriate client
+	var client modbus.Client
+	if isConsumption {
+		client = modbus.NewClient(a.consumptionConn)
+	} else {
+		client = modbus.NewClient(a.solarConn)
+	}
+
 	data := &meterData{}
 
 	// Read input registers (Shelly uses input registers)
 	// Total power (31013)
 	results, err := client.ReadInputRegisters(1013, 2)
 	if err != nil {
+		// Connection might be dead, mark for reconnection
+		if isConsumption {
+			a.consumptionConn.Close()
+			a.consumptionConn = nil
+		} else {
+			a.solarConn.Close()
+			a.solarConn = nil
+		}
 		log.Warnf("Failed to read power from %s: %v", ip, err)
 	} else {
 		data.totalPower = math.Float32frombits(
@@ -84,9 +137,7 @@ func readMeterData(ip string) (*meterData, error) {
 
 	// Total forward energy (31162)
 	results, err = client.ReadInputRegisters(1162, 2)
-	if err != nil {
-		log.Warnf("Failed to read forward energy from %s: %v", ip, err)
-	} else {
+	if err == nil {
 		data.totalForward = math.Float32frombits(
 			binary.BigEndian.Uint32(
 				[]byte{
@@ -99,11 +150,8 @@ func readMeterData(ip string) (*meterData, error) {
 		)
 	}
 
-	// Total reverse energy (31164)
 	results, err = client.ReadInputRegisters(1164, 2)
-	if err != nil {
-		log.Warnf("Failed to read reverse energy from %s: %v", ip, err)
-	} else {
+	if err == nil {
 		data.totalReverse = math.Float32frombits(
 			binary.BigEndian.Uint32(
 				[]byte{
@@ -123,7 +171,6 @@ func readMeterData(ip string) (*meterData, error) {
 	data.phaseForwardEnergy = make([]float32, 3)
 	data.phaseReverseEnergy = make([]float32, 3)
 
-	// Read data for each phase
 	for phase := 0; phase < 3; phase++ {
 		emOffset := phase * 20
 		dataOffset := phase * 20
@@ -363,9 +410,9 @@ func (a *App) ReadMeterData() {
 		}
 	}
 
-	// Read data from both meters
-	consumptionData, consumptionErr := readMeterData(a.config.ConsumptionIP)
-	solarData, solarErr := readMeterData(a.config.SolarIP)
+	// Read data from both meters using persistent connections
+	consumptionData, consumptionErr := a.readMeterData(a.config.ConsumptionIP, true)
+	solarData, solarErr := a.readMeterData(a.config.SolarIP, false)
 
 	// If we can only read one meter, use it directly
 	var netData *meterData
@@ -479,6 +526,14 @@ func (a *App) Shutdown() {
 	close(a.shutdownCh)
 	if a.dbusConn != nil {
 		a.dbusConn.Close()
+	}
+
+	// Close persistent Modbus connections
+	if a.consumptionConn != nil {
+		a.consumptionConn.Close()
+	}
+	if a.solarConn != nil {
+		a.solarConn.Close()
 	}
 }
 
