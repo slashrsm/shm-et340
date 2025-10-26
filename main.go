@@ -750,7 +750,7 @@ func main() {
 
 	// Configure polling interval
 	pollingStr := os.Getenv("POLLING_INTERVAL_SECONDS")
-	pollingInterval := 1 * time.Second
+	pollingInterval := 500 * time.Millisecond // 0.5s
 	if pollingStr != "" {
 		if seconds, err := strconv.ParseFloat(pollingStr, 32); err == nil {
 			pollingInterval = time.Duration(int(seconds*1000)) * time.Millisecond
